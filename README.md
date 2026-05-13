@@ -52,16 +52,21 @@ PG_PORT=5432
 PG_USER=postgres
 PG_PASSWORD=你的密码
 PG_DATABASE=rag_db
+```
 
 ### 2. 数据库初始化与数据入库
+```python
 from vector import build_vector_db
 
 # 指定包含 .md 文件的文件夹路径
 model = build_vector_db("D:/data/financial_reports")
+```
 
 ### 3. 对话与检索测试
+```python
 from test_script import test_generation
 
 query = "盛和资源和合诚股份，哪家公司2019年的研发投入占比更高？"
 # 系统会跨文档检索，合并结果并打上来源标签返回给大模型
 test_generation(query, top_k=10)
+```
