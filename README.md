@@ -17,8 +17,9 @@
     - 使用 **RRF (Reciprocal Rank Fusion)** 算法融合多路检索结果。
 - **多级 Query 优化流水线**：
     - **意图识别**：精准区分闲聊与专业财务检索。
-    - **多轮对话改写**：补全代词和省略语（如“它的营收是多少” -> “盛和资源的营收是多少”）。
-    - **检索关键词精简**：自动将自然语言转化为标准的财务科目术语（如“营收” -> “营业收入”）。
+    - **多轮对话改写**：补全代词和省略语。
+    - **检索关键词精简**：自动将自然语言转化为标准的财务科目术语。
+    - **记忆功能**: 多轮对话中参考上下文记忆进行回答。
 - **来源自动标注 (Source Tagging)**：
     - 在多文档检索场景下，系统为每一段召回的内容自动打上来源文件标签，防止大模型在对比分析时张冠李戴。
 
@@ -44,10 +45,23 @@
 ```env
 DEEPSEEK_API_KEY=你的API密钥
 DEEPSEEK_API_BASE=[https://api.deepseek.com](https://api.deepseek.com)
-DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_MODEL=deepseek-v4-flash
 
 PG_HOST=localhost
 PG_PORT=5432
 PG_USER=postgres
 PG_PASSWORD=你的密码
 PG_DATABASE=rag_db
+
+### 2. 数据库初始化与数据入库
+from vector import build_vector_db
+
+# 指定包含 .md 文件的文件夹路径
+model = build_vector_db("D:/data/financial_reports")
+
+### 3. 对话与检索测试
+from test_script import test_generation
+
+query = "盛和资源和合诚股份，哪家公司2019年的研发投入占比更高？"
+# 系统会跨文档检索，合并结果并打上来源标签返回给大模型
+test_generation(query, top_k=10)
