@@ -114,18 +114,19 @@
             border-radius: 12px;
             line-height: 1.6;
             word-wrap: break-word;
-            white-space: pre-wrap;
             overflow-wrap: break-word;
         }
 
         /* ===== Markdown 渲染样式 ===== */
         .bubble .markdown-body {
             font-size: 14px;
-            line-height: 1.6;
+            line-height: 1.5;
+            white-space: normal;
         }
 
         .bubble .markdown-body p {
-            margin: 0.5em 0;
+            margin: 0.3em 0;
+            line-height: 1.5;
         }
 
         .bubble .markdown-body p:first-child {
@@ -134,6 +135,10 @@
 
         .bubble .markdown-body p:last-child {
             margin-bottom: 0;
+        }
+
+        .bubble .markdown-body br {
+            display: none;
         }
 
         .bubble .markdown-body strong {
@@ -761,7 +766,7 @@
         // 配置 marked.js
         if (typeof marked !== 'undefined') {
             marked.setOptions({
-                breaks: true,  // 支持换行
+                breaks: false,  // 关闭单换行转 <br>，只保留双换行段落
                 gfm: true,     // 支持 GitHub 风格 Markdown
                 highlight: function(code, lang) {
                     if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
