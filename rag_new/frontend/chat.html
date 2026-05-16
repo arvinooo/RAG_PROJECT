@@ -681,11 +681,18 @@
                     }
                     break;
                 case '混合检索':
-                    content = `召回片段: ${stage.detail || '0'}\n检索方式: 向量+关键词融合`;
-                    if (debugData.retrieved_chunks && debugData.retrieved_chunks.length > 0) {
-                        content += `\n\n前3个片段:\n`;
-                        debugData.retrieved_chunks.slice(0, 3).forEach((chunk, i) => {
-                            content += `\n[${i+1}] ${chunk.source}\n  RRF: ${chunk.rrf_score}\n  ${chunk.content.substring(0, 100)}...\n`;
+                    const chunkCount = debugData.retrieved_chunks ? debugData.retrieved_chunks.length : 0;
+                    content = `召回片段: ${chunkCount}\n检索方式: 向量+关键词融合(RRF)`;
+                    if (debugData.retrieved_chunks && chunkCount > 0) {
+                        content += `\n\n📄 检索到的文档片段:\n`;
+                        debugData.retrieved_chunks.forEach((chunk, i) => {
+                            content += `\n──── 片段 ${i+1} ────\n`;
+                            content += `来源: ${chunk.source}\n`;
+                            content += `RRF分数: ${chunk.rrf_score}\n`;
+                            if (chunk.vector_similarity !== undefined) {
+                                content += `向量相似度: ${chunk.vector_similarity}\n`;
+                            }
+                            content += `内容:\n${chunk.content}\n`;
                         });
                     }
                     break;
@@ -693,13 +700,18 @@
                     content = `处理: 还原表格占位符为完整内容`;
                     break;
                 case '上下文构建':
-                    content = stage.detail || '上下文已构建';
+                    const contextText = debugData.context_text || debugData.context || '';
+                    if (contextText) {
+                        content = `上下文长度: ${contextText.length} 字符\n\n📋 构建的上下文:\n${contextText}`;
+                    } else {
+                        content = stage.detail || `上下文已构建 (${stage.elapsed_ms}ms)`;
+                    }
                     break;
                 case 'LLM生成':
                     content = `输出字符: ${stage.detail || '0'}\n模型: ${window.modelName || '未知'}`;
                     break;
                 case '总耗时':
-                    content = `总耗时: ${formatTime(stage.elapsed_ms)}\n阶段数: ${Object.keys(stageMessageElements).length}`;
+                    content = `总耗时: ${formatTime(stage.elapsed_ms)}\n阶段数: ${Object.keys(currentStageElements).length}`;
                     break;
                 default:
                     content = stage.detail || '无详细信息';
@@ -830,9 +842,9 @@
                                         if (finalData.error) {
                                             updateAssistantBubbleText(assistantBubble, '错误: ' + finalData.error);
                                             // 更新最后阶段为错误状态
-                                            const lastStage = Object.values(stageMessageElements).pop();
-                                            if (lastStage) {
-                                                addOrUpdateStage({name: Object.keys(stageMessageElements).pop(), status: 'error', elapsed_ms: 0, detail: finalData.error});
+                                            const lastStageName = Object.keys(currentStageElements).pop();
+                                            if (lastStageName) {
+                                                addOrUpdateStage({name: lastStageName, status: 'error', elapsed_ms: 0, detail: finalData.error});
                                             }
                                         } else {
                                             updateAssistantBubbleText(assistantBubble, finalData.answer);
@@ -840,7 +852,7 @@
 
                                             // 保存 debug 数据供展开时使用
                                             if (finalData.debug) {
-                                                window.currentDebugData = finalData.debug;
+                                                currentDebugData = finalData.debug;
                                             }
 
                                             // 用后端返回的完整 pipeline 数据更新阶段消息

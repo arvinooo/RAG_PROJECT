@@ -229,6 +229,7 @@ async def chat(request: ChatRequest):
 
     context_text = "\n\n---\n\n".join(retrieved_contexts)
     _record_stage("上下文构建", "done", t0, f"Context {len(context_text)} 字符")
+    debug_info["context_text"] = context_text  # 保存上下文供前端展开显示
 
     # ============ 8. 构建 messages ============
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
