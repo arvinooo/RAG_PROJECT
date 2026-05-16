@@ -557,8 +557,9 @@
         }
 
         // ===== 阶段消息管理 =====
-        let stageMessageElements = {};  // 存储阶段消息的 DOM 元素 {stageName: element}
-        let stageMessageContainer = null;  // 阶段消息的容器
+        let currentStageContainer = null;  // 当前请求的阶段消息容器
+        let currentStageElements = {};     // 当前请求的阶段消息元素 {stageName: element}
+        let currentDebugData = {};        // 当前请求的 debug 数据
 
         // 格式化时间显示：小于1秒显示毫秒，大于等于1秒显示秒
         function formatTime(ms) {
@@ -569,38 +570,41 @@
             }
         }
 
-        // 创建阶段消息容器
-        function createStageContainer() {
+        // 创建阶段消息容器（插入到指定元素之前）
+        function createStageContainer(referenceElement) {
             const messagesDiv = document.getElementById('messages');
             
-            // 移除旧的容器
-            removeStageContainer();
-            
             const container = document.createElement('div');
-            container.id = 'stageMessageContainer';
+            container.className = 'stage-message-container';
             container.style.display = 'flex';
             container.style.flexDirection = 'column';
             container.style.gap = '6px';
             container.style.padding = '0 20px';
-            messagesDiv.appendChild(container);
-            stageMessageContainer = container;
-            stageMessageElements = {};
+            container.style.marginBottom = '15px';
             
-            // 自动滚动
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            // 插入到参考元素之前
+            messagesDiv.insertBefore(container, referenceElement);
+            
+            currentStageContainer = container;
+            currentStageElements = {};
+            currentDebugData = {};
+            
+            return container;
         }
 
         // 移除阶段消息容器
         function removeStageContainer() {
-            const old = document.getElementById('stageMessageContainer');
-            if (old) old.remove();
-            stageMessageContainer = null;
-            stageMessageElements = {};
+            if (currentStageContainer) {
+                currentStageContainer.remove();
+                currentStageContainer = null;
+            }
+            currentStageElements = {};
+            currentDebugData = {};
         }
 
         // 添加/更新阶段消息
         function addOrUpdateStage(stage) {
-            if (!stageMessageContainer) return;
+            if (!currentStageContainer) return;
             
             const icons = { pending: '○', running: '◔', done: '✓', skipped: '—', error: '✗', total: '⏱' };
             const icon = icons[stage.status] || '○';
@@ -614,16 +618,15 @@
             }
             
             // 检查是否已存在
-            let el = stageMessageElements[stage.name];
+            let el = currentStageElements[stage.name];
             if (!el) {
                 el = document.createElement('div');
                 el.className = `stage-message ${stage.status}`;
-                stageMessageElements[stage.name] = el;
-                stageMessageContainer.appendChild(el);
+                currentStageElements[stage.name] = el;
+                currentStageContainer.appendChild(el);
                 
                 // 绑定点击事件
                 el.onclick = function(e) {
-                    // 避免重复点击头部时触发
                     this.classList.toggle('expanded');
                 };
                 
@@ -653,7 +656,7 @@
 
         // 获取阶段展开内容
         function getStageExpandContent(stage) {
-            const debugData = window.currentDebugData || {};
+            const debugData = currentDebugData || {};
             let content = '';
             
             switch(stage.name) {
@@ -705,9 +708,14 @@
             return content;
         }
 
-        // 隐藏阶段消息
+        // 隐藏当前阶段消息
         function hideStageMessages() {
-            removeStageContainer();
+            if (currentStageContainer) {
+                currentStageContainer.remove();
+                currentStageContainer = null;
+            }
+            currentStageElements = {};
+            currentDebugData = {};
         }
 
         // 发送消息（支持流式输出 + 流水线进度）
@@ -739,11 +747,13 @@
             sendBtn.innerHTML = '<span class="loading"></span>';
             isStreaming = true;
 
-            // 创建阶段消息容器（在 AI 气泡之前显示）
-            createStageContainer();
+            // 先创建 AI 消息气泡
+            const assistantMsg = createAssistantBubble();
+            const assistantMessageDiv = assistantMsg.messageDiv;
+            const assistantBubble = assistantMsg.bubble;
             
-            // 创建一个 AI 消息气泡用于流式填充
-            const assistantBubble = createAssistantBubble();
+            // 在 AI 气泡之前创建阶段消息容器
+            createStageContainer(assistantMessageDiv);
 
             try {
                 const requestBody = {
@@ -883,7 +893,8 @@
             messagesDiv.appendChild(messageDiv);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
-            return bubble;
+            // 返回整个消息 div 和 bubble
+            return { messageDiv, bubble };
         }
 
         // 更新流式气泡内容（带光标）
