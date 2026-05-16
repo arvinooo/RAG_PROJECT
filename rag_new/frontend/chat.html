@@ -327,7 +327,7 @@
             color: #f57c00;
         }
 
-        /* ===== 阶段消息卡片 ===== */
+        /* ===== 阶段消息卡片（可展开） ===== */
         .stage-message {
             display: flex;
             gap: 10px;
@@ -346,9 +346,20 @@
             flex-shrink: 0;
             background: #f0f0f0;
             color: #999;
+            cursor: pointer;
+            transition: all 0.2s;
         }
 
-        .stage-message .stage-bubble {
+        .stage-message .stage-avatar:hover {
+            transform: scale(1.1);
+        }
+
+        .stage-message .stage-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .stage-message .stage-header {
             padding: 8px 12px;
             background: #f8f9fa;
             border-radius: 8px;
@@ -357,28 +368,67 @@
             display: flex;
             align-items: center;
             gap: 8px;
-            max-width: 80%;
+            cursor: pointer;
+            transition: all 0.2s;
+            user-select: none;
         }
 
-        .stage-message .stage-bubble .stage-name {
+        .stage-message .stage-header:hover {
+            background: #e9ecef;
+        }
+
+        .stage-message .stage-header .expand-icon {
+            margin-left: auto;
+            font-size: 10px;
+            color: #999;
+            transition: transform 0.2s;
+        }
+
+        .stage-message.expanded .stage-header .expand-icon {
+            transform: rotate(180deg);
+        }
+
+        .stage-message .stage-header .stage-name {
             font-weight: 500;
             color: #333;
         }
 
-        .stage-message .stage-bubble .stage-time {
+        .stage-message .stage-header .stage-time {
             color: #999;
             font-size: 11px;
         }
 
-        .stage-message .stage-bubble .stage-detail {
+        .stage-message .stage-header .stage-detail {
             color: #999;
             font-size: 11px;
             font-style: italic;
         }
 
+        .stage-message .stage-expand-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease, padding 0.3s ease;
+            background: #f8f9fa;
+            border-radius: 0 0 8px 8px;
+            font-size: 11px;
+            color: #666;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .stage-message.expanded .stage-expand-content {
+            max-height: 500px;
+            padding: 10px 12px;
+            overflow-y: auto;
+        }
+
         .stage-message.done .stage-avatar {
             background: #52c41a;
             color: white;
+        }
+
+        .stage-message.done .stage-header {
+            border-left: 3px solid #52c41a;
         }
 
         .stage-message.running .stage-avatar {
@@ -387,13 +437,18 @@
             animation: pulse 1.2s ease-in-out infinite;
         }
 
+        .stage-message.running .stage-header {
+            border-left: 3px solid #1890ff;
+        }
+
         .stage-message.skipped .stage-avatar {
             background: #f5f5f5;
             color: #ccc;
         }
 
-        .stage-message.skipped .stage-bubble {
+        .stage-message.skipped .stage-header {
             opacity: 0.6;
+            border-left: 3px solid #ddd;
         }
 
         .stage-message.error .stage-avatar {
@@ -401,15 +456,20 @@
             color: white;
         }
 
+        .stage-message.error .stage-header {
+            border-left: 3px solid #ff4d4f;
+        }
+
         .stage-message.total .stage-avatar {
             background: linear-gradient(135deg, #667eea, #764ba2);
             color: white;
         }
 
-        .stage-message.total .stage-bubble {
+        .stage-message.total .stage-header {
             background: linear-gradient(135deg, rgba(102,126,234,0.1), rgba(118,75,162,0.1));
             font-weight: 600;
             color: #667eea;
+            border-left: 3px solid #667eea;
         }
 
         @keyframes pulse {
@@ -481,6 +541,7 @@
         let currentMode = 'hybrid';
         let currentTopK = 5;
         let isStreaming = false;  // 流式输出中禁止重复发送
+        window.currentDebugData = {};  // 存储当前请求的 debug 数据
 
         // 初始化：检查连接状态
         async function checkStatus() {
@@ -546,6 +607,12 @@
             const timeStr = stage.elapsed_ms > 0 ? `<span class="stage-time">${formatTime(stage.elapsed_ms)}</span>` : '';
             const detailStr = stage.detail ? `<span class="stage-detail">${stage.detail}</span>` : '';
             
+            // 构建展开内容（从 stage 数据中提取详细信息）
+            let expandContent = '';
+            if (stage.status === 'done' || stage.status === 'error') {
+                expandContent = getStageExpandContent(stage);
+            }
+            
             // 检查是否已存在
             let el = stageMessageElements[stage.name];
             if (!el) {
@@ -554,6 +621,12 @@
                 stageMessageElements[stage.name] = el;
                 stageMessageContainer.appendChild(el);
                 
+                // 绑定点击事件
+                el.onclick = function(e) {
+                    // 避免重复点击头部时触发
+                    this.classList.toggle('expanded');
+                };
+                
                 // 自动滚动
                 const messagesDiv = document.getElementById('messages');
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
@@ -561,14 +634,75 @@
             
             // 更新状态和内容
             el.className = `stage-message ${stage.status}`;
+            if (el.classList.contains('expanded')) {
+                el.className = `stage-message ${stage.status} expanded`;
+            }
             el.innerHTML = `
                 <div class="stage-avatar">${icon}</div>
-                <div class="stage-bubble">
-                    <span class="stage-name">${stage.name}</span>
-                    ${timeStr}
-                    ${detailStr}
+                <div class="stage-content">
+                    <div class="stage-header">
+                        <span class="stage-name">${stage.name}</span>
+                        ${timeStr}
+                        ${detailStr}
+                        <span class="expand-icon">▼</span>
+                    </div>
+                    <div class="stage-expand-content">${expandContent}</div>
                 </div>
             `;
+        }
+
+        // 获取阶段展开内容
+        function getStageExpandContent(stage) {
+            const debugData = window.currentDebugData || {};
+            let content = '';
+            
+            switch(stage.name) {
+                case '意图识别':
+                    content = `识别结果: ${stage.detail || debugData.intent || '未知'}\n分类: ${stage.detail === '财务查询' ? 'rag' : 'chat'}`;
+                    break;
+                case '查询改写':
+                    if (debugData.rewrite_steps) {
+                        content = `原始问题: ${debugData.rewrite_steps.original}\n补全后: ${debugData.rewrite_steps.step1_complete}\n优化后: ${debugData.rewrite_steps.step2_optimized}`;
+                    } else {
+                        content = stage.detail || '查询已优化';
+                    }
+                    break;
+                case '智能路由':
+                    content = `目标文档: ${debugData.router_result || stage.detail || '全部文档'}`;
+                    break;
+                case '检索优化':
+                    if (debugData.rewrite_steps) {
+                        content = `优化策略: 精简关键词\n检索词: ${debugData.rewrite_steps.step2_optimized}`;
+                    } else {
+                        content = stage.detail || '检索词已优化';
+                    }
+                    break;
+                case '混合检索':
+                    content = `召回片段: ${stage.detail || '0'}\n检索方式: 向量+关键词融合`;
+                    if (debugData.retrieved_chunks && debugData.retrieved_chunks.length > 0) {
+                        content += `\n\n前3个片段:\n`;
+                        debugData.retrieved_chunks.slice(0, 3).forEach((chunk, i) => {
+                            content += `\n[${i+1}] ${chunk.source}\n  RRF: ${chunk.rrf_score}\n  ${chunk.content.substring(0, 100)}...\n`;
+                        });
+                    }
+                    break;
+                case '占位符解析':
+                    content = `处理: 还原表格占位符为完整内容`;
+                    break;
+                case '上下文构建':
+                    content = stage.detail || '上下文已构建';
+                    break;
+                case 'LLM生成':
+                    content = `输出字符: ${stage.detail || '0'}\n模型: ${window.modelName || '未知'}`;
+                    break;
+                case '总耗时':
+                    content = `总耗时: ${formatTime(stage.elapsed_ms)}\n阶段数: ${Object.keys(stageMessageElements).length}`;
+                    break;
+                default:
+                    content = stage.detail || '无详细信息';
+            }
+            
+            return content;
         }
 
         // 隐藏阶段消息
@@ -693,6 +827,11 @@
                                         } else {
                                             updateAssistantBubbleText(assistantBubble, finalData.answer);
                                             conversationHistory = finalData.history;
+
+                                            // 保存 debug 数据供展开时使用
+                                            if (finalData.debug) {
+                                                window.currentDebugData = finalData.debug;
+                                            }
 
                                             // 用后端返回的完整 pipeline 数据更新阶段消息
                                             if (finalData.debug && finalData.debug.pipeline_stages) {
