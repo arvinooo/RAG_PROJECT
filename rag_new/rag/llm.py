@@ -2,17 +2,60 @@
 LLM调用模块 - 智能路由、查询改写、意图识别
 """
 from openai import OpenAI
-from .config import LLMConfig
+from .config import LLMConfig, LlamaCppConfig, DEFAULT_LLM_PROVIDER
 
 
-def get_llm_client():
-    """获取LLM客户端（单例模式）"""
-    if not hasattr(get_llm_client, '_client'):
-        get_llm_client._client = OpenAI(
-            api_key=LLMConfig.API_KEY,
-            base_url=LLMConfig.BASE_URL
-        )
-    return get_llm_client._client
+def get_llm_client(provider: str = None):
+    """获取LLM客户端（单例模式）
+
+    Args:
+        provider: "deepseek" 或 "llamacpp"，None 则用配置默认值
+    """
+    import os
+
+    if provider is None:
+        provider = DEFAULT_LLM_PROVIDER
+    # 如果指定的 provider 没有配置 API Key，自动降级到 llamacpp
+    if provider == "deepseek" and not LLMConfig.API_KEY:
+        print("⚠️ DeepSeek API Key 未配置，自动切换到 Llama.cpp")
+        provider = "llamacpp"
+
+    # Llama.cpp 走内网，绕过系统代理
+    if provider == "llamacpp":
+        os.environ.pop("http_proxy", None)
+        os.environ.pop("https_proxy", None)
+        os.environ.pop("HTTP_PROXY", None)
+        os.environ.pop("HTTPS_PROXY", None)
+        os.environ["no_proxy"] = "*"
+
+    cache_attr = f'_client_{provider}'
+    if not hasattr(get_llm_client, cache_attr):
+        if provider == "llamacpp":
+            from .config import LlamaCppConfig
+            setattr(get_llm_client, cache_attr, OpenAI(
+                api_key=LlamaCppConfig.API_KEY,
+                base_url=LlamaCppConfig.API_BASE
+            ))
+        else:
+            setattr(get_llm_client, cache_attr, OpenAI(
+                api_key=LLMConfig.API_KEY,
+                base_url=LLMConfig.BASE_URL
+            ))
+    return getattr(get_llm_client, cache_attr)
+
+
+def _model_name():
+    """根据默认提供者返回模型名"""
+    if DEFAULT_LLM_PROVIDER == "llamacpp":
+        return LlamaCppConfig.MODEL
+    return LLMConfig.MODEL
+
+
+def _extra_body():
+    """根据默认提供者返回 extra_body"""
+    if DEFAULT_LLM_PROVIDER == "llamacpp":
+        return LlamaCppConfig.extra_body()
+    return {"thinking": {"type": "disabled"}}
 
 
 def router(query: str, history: list = None) -> list:
@@ -58,8 +101,8 @@ def router(query: str, history: list = None) -> list:
 
 
     response = client.chat.completions.create(
-        model=LLMConfig.MODEL,
-        extra_body={"thinking": {"type": "disabled"}},
+        model=_model_name(),
+        extra_body=_extra_body(),
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
@@ -155,8 +198,8 @@ def rewrite(query: str, history: list = None) -> str:
 现在请改写："""
 
     response = client.chat.completions.create(
-        model=LLMConfig.MODEL,
-        extra_body={"thinking": {"type": "disabled"}},
+        model=_model_name(),
+        extra_body=_extra_body(),
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
@@ -197,8 +240,8 @@ def intent(query: str, history: list = None) -> str:
 只返回一个词：chat 或 retrieval，不要其他解释。"""
 
     response = client.chat.completions.create(
-        model=LLMConfig.MODEL,
-        extra_body={"thinking": {"type": "disabled"}},
+        model=_model_name(),
+        extra_body=_extra_body(),
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
@@ -279,8 +322,8 @@ def rewrite_for_retrieval(query: str) -> str:
 每次改写query前一定要认真查看改写要求和改写示例,   只返回优化后的查询，不要其他解释。"""
 
     response = client.chat.completions.create(
-        model=LLMConfig.MODEL,
-        extra_body={"thinking": {"type": "disabled"}},
+        model=_model_name(),
+        extra_body=_extra_body(),
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )

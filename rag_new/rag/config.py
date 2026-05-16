@@ -23,17 +23,49 @@ class LLMConfig:
     MODEL = os.getenv("DEEPSEEK_MODEL")
 
 
+class LlamaCppConfig:
+    """Llama.cpp 本地模型配置（Qwen3.6 非思考模式）"""
+    API_BASE = os.getenv('LLAMA_CPP_API_BASE', 'http://localhost:12686/v1')
+    API_KEY = os.getenv('LLAMA_CPP_API_KEY', 'llamacpp')
+    MODEL = os.getenv('LLAMA_CPP_MODEL', 'Qwen3.6-27B-MTP-UD-Q5_K_XL.gguf')
+    MAX_TOKENS = int(os.getenv('LLAMA_CPP_MAX_TOKENS', '16384'))
+    TEMPERATURE = float(os.getenv('LLAMA_CPP_TEMPERATURE', '0.7'))
+    TOP_P = float(os.getenv('LLAMA_CPP_TOP_P', '0.80'))
+    TOP_K = int(os.getenv('LLAMA_CPP_TOP_K', '20'))
+    MIN_P = float(os.getenv('LLAMA_CPP_MIN_P', '0.0'))
+    PRESENCE_PENALTY = float(os.getenv('LLAMA_CPP_PRESENCE_PENALTY', '1.5'))
+    REPEAT_PENALTY = float(os.getenv('LLAMA_CPP_REPEAT_PENALTY', '1.0'))
+    ENABLE_THINKING = os.getenv('LLAMA_CPP_ENABLE_THINKING', 'False').lower() == 'true'
+
+    @staticmethod
+    def extra_body() -> dict:
+        """构建 Llama.cpp 调用的 extra_body 参数"""
+        return {
+            "top_k": LlamaCppConfig.TOP_K,
+            "min_p": LlamaCppConfig.MIN_P,
+            "presence_penalty": LlamaCppConfig.PRESENCE_PENALTY,
+            "repetition_penalty": LlamaCppConfig.REPEAT_PENALTY,
+            "chat_template_kwargs": {
+                "enable_thinking": LlamaCppConfig.ENABLE_THINKING
+            }
+        }
+
+
 # ============ 向量模型配置 ============
 class EmbeddingConfig:
-    MODEL_NAME = 'BAAI/bge-small-zh-v1.5'
-    DEVICE = "cuda"
+    MODEL_NAME = '/home/xusijie/.cache/modelscope/hub/models/AI-ModelScope/bge-small-zh-v1.5'
+    DEVICE = "cpu"
     VECTOR_DIM = 512
 
 
 # ============ 路径配置 ============
 class PathConfig:
     # 默认财报文档路径
-    DEFAULT_DOC_PATH = "D:/github/rag_project/rag_财报/财报"
+    DEFAULT_DOC_PATH = "/home/xusijie/code/liweiquan/RAG_PROJECT/rag_raw/财报"
+
+
+# ============ 默认 LLM 提供者 ============
+DEFAULT_LLM_PROVIDER = "llamacpp"  # "deepseek" 或 "llamacpp"
 
 
 # ============ 系统提示词 ============

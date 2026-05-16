@@ -21,7 +21,7 @@ def get_model():
     """获取或初始化 embedding 模型"""
     global _model
     if _model is None:
-        _model = SentenceTransformer(EmbeddingConfig.MODEL_NAME, EmbeddingConfig.DEVICE)
+        _model = SentenceTransformer(EmbeddingConfig.MODEL_NAME, device=EmbeddingConfig.DEVICE)
     return _model
 
 
@@ -131,14 +131,9 @@ def summary(table_content: str) -> dict:
         dict: 包含table_title, headers, core_summary, key_entities, retrieval_keywords
     """
     import json
-    from openai import OpenAI
-    from .config import LLMConfig
+    from .llm import get_llm_client, _model_name, _extra_body
 
-    # 初始化 DeepSeek 客户端
-    deepseek_client = OpenAI(
-        api_key=LLMConfig.API_KEY,
-        base_url=LLMConfig.BASE_URL
-    )
+    client = get_llm_client()
 
     # 构建提示词
     prompt = f"""# Role
@@ -191,9 +186,9 @@ Output:
 
 {table_content}"""
 
-    response = deepseek_client.chat.completions.create(
-        model=LLMConfig.MODEL,
-        extra_body={"thinking": {"type": "disabled"}},
+    response = client.chat.completions.create(
+        model=_model_name(),
+        extra_body=_extra_body(),
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )

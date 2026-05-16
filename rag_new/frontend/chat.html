@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>RAG财报问答系统</title>
     <style>
         * {
@@ -210,6 +213,20 @@
             animation: spin 0.8s linear infinite;
         }
 
+        .bubble .cursor {
+            display: inline-block;
+            width: 2px;
+            height: 1em;
+            background: #667eea;
+            margin-left: 2px;
+            vertical-align: text-bottom;
+            animation: blink 0.8s step-end infinite;
+        }
+
+        @keyframes blink {
+            50% { opacity: 0; }
+        }
+
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
@@ -368,11 +385,12 @@
     </div>
 
     <script>
-        const API_URL = 'http://localhost:8000';
+        const API_URL = 'http://172.18.108.47:8000';
         let conversationHistory = [];
         let debugMode = false;
         let currentMode = 'hybrid';
         let currentTopK = 5;
+        let isStreaming = false;  // 流式输出中禁止重复发送
 
         // 初始化：检查连接状态
         async function checkStatus() {
@@ -387,11 +405,13 @@
             }
         }
 
-        // 发送消息
+        // 发送消息（支持流式输出）
         async function sendMessage() {
             const input = document.getElementById('input');
             const message = input.value.trim();
-            if (!message) return;
+            if (!message || isStreaming) return;
+
+            console.log('[chat] 开始发送消息:', message);
 
             const isOnline = await checkStatus();
             if (!isOnline) {
@@ -400,7 +420,8 @@
             }
 
             // 隐藏欢迎消息
-            document.getElementById('welcome').style.display = 'none';
+            const welcome = document.getElementById('welcome');
+            if (welcome) welcome.style.display = 'none';
 
             // 显示用户消息
             appendMessage('user', message);
@@ -411,45 +432,151 @@
             const sendBtn = document.getElementById('sendBtn');
             sendBtn.disabled = true;
             sendBtn.innerHTML = '<span class="loading"></span>';
+            isStreaming = true;
+
+            // 创建一个 AI 消息气泡用于流式填充
+            const assistantBubble = createAssistantBubble();
 
             try {
+                const requestBody = {
+                    query: message,
+                    history: conversationHistory,
+                    mode: currentMode,
+                    top_k: currentTopK,
+                    debug: debugMode,
+                    stream: true
+                };
+                console.log('[chat] 请求体:', JSON.stringify(requestBody));
+
                 const response = await fetch(`${API_URL}/chat`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        query: message,
-                        history: conversationHistory,
-                        mode: currentMode,
-                        top_k: currentTopK,
-                        debug: debugMode
-                    })
+                    body: JSON.stringify(requestBody)
                 });
+
+                console.log('[chat] 响应状态:', response.status, 'Content-Type:', response.headers.get('content-type'));
 
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}`);
                 }
 
-                const data = await response.json();
-
-                // 显示助手消息
-                let assistantMessage = data.answer;
-                if (debugMode && data.debug) {
-                    assistantMessage += '\n\n' + formatDebugInfo(data.debug);
+                // 检查是否有流式 body
+                if (!response.body) {
+                    throw new Error('浏览器不支持 ReadableStream');
                 }
-                appendMessage('assistant', assistantMessage);
 
-                // 更新对话历史
-                conversationHistory = data.history;
+                // 流式读取
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let fullAnswer = '';
+                let chunkCount = 0;
+
+                console.log('[chat] 开始流式读取...');
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        console.log('[chat] 流式读取完成，共', chunkCount, '个chunk');
+                        break;
+                    }
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // 解析 SSE 事件
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop() || ''; // 最后一段可能不完整，留着
+
+                    let event = '';
+                    for (const block of lines) {
+                        const blockLines = block.split('\n');
+                        for (const line of blockLines) {
+                            if (line.startsWith('event: ')) {
+                                event = line.slice(7);
+                            } else if (line.startsWith('data: ')) {
+                                const dataStr = line.slice(6);
+                                if (event === 'message') {
+                                    try {
+                                        fullAnswer += JSON.parse(dataStr);
+                                        chunkCount++;
+                                        updateAssistantBubble(assistantBubble, fullAnswer);
+                                    } catch(e) { console.error('parse error:', e); }
+                                } else if (event === 'done') {
+                                    try {
+                                        const finalData = JSON.parse(dataStr);
+                                        console.log('[chat] 收到 done 事件');
+                                        if (finalData.error) {
+                                            updateAssistantBubbleText(assistantBubble, '错误: ' + finalData.error);
+                                        } else {
+                                            updateAssistantBubbleText(assistantBubble, finalData.answer);
+                                            if (debugMode && finalData.debug) {
+                                                appendDebugInfo(assistantBubble, finalData.debug);
+                                            }
+                                            conversationHistory = finalData.history;
+                                        }
+                                    } catch(e) { console.error('parse error:', e); }
+                                }
+                            }
+                        }
+                    }
+
+                    // ★ 关键：每读完一个 chunk 就等 1ms，让浏览器有机会重绘
+                    await new Promise(r => setTimeout(r, 1));
+                }
 
             } catch (error) {
-                appendMessage('assistant', `错误: ${error.message}`);
+                console.error('[chat] 错误:', error);
+                updateAssistantBubbleText(assistantBubble, `错误: ${error.message}`);
             } finally {
                 sendBtn.disabled = false;
                 sendBtn.textContent = '发送';
+                isStreaming = false;
             }
         }
 
-        // 添加消息到界面
+        // 创建 AI 助手消息气泡（用于流式输出）
+        function createAssistantBubble() {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant';
+
+            const avatar = document.createElement('div');
+            avatar.className = 'avatar';
+            avatar.textContent = 'AI';
+
+            const bubble = document.createElement('div');
+            bubble.className = 'bubble';
+            bubble.innerHTML = '<span class="cursor"></span>'; // 闪烁光标
+
+            messageDiv.appendChild(avatar);
+            messageDiv.appendChild(bubble);
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            return bubble;
+        }
+
+        // 更新流式气泡内容（带光标）
+        function updateAssistantBubble(bubble, text) {
+            bubble.textContent = text;
+            const cursor = document.createElement('span');
+            cursor.className = 'cursor';
+            bubble.appendChild(cursor);
+            const messagesDiv = document.getElementById('messages');
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // 更新气泡内容（不带光标，最终状态）
+        function updateAssistantBubbleText(bubble, text) {
+            bubble.textContent = text;
+        }
+
+        // 追加 debug 信息
+        function appendDebugInfo(bubble, debug) {
+            bubble.textContent += '\n\n' + formatDebugInfo(debug);
+        }
+
+        // 添加消息到界面（非流式）
         function appendMessage(role, content) {
             const messagesDiv = document.getElementById('messages');
             const messageDiv = document.createElement('div');
