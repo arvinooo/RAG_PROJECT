@@ -21,7 +21,6 @@ from rag import (
     get_doc_count,
     router,
     rewrite,
-    intent,
     rewrite_for_retrieval,
     resolve_placeholders,
 )
@@ -36,7 +35,7 @@ app = FastAPI(
 # 添加 CORS 中间件
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],           # 允许所有来源（开发环境）
+    allow_origins=["*"],           # 允许所有来源(开发环境)
     allow_credentials=True,
     allow_methods=["*"],           # 允许所有方法
     allow_headers=["*"],           # 允许所有头
@@ -52,8 +51,8 @@ async def validation_exception_handler(request, exc):
 
 # ============ 全局变量 ============
 model = None
-client = None          # 同步客户端（非流式用）
-async_client = None    # 异步客户端（流式用）
+client = None          # 同步客户端(非流式用)
+async_client = None    # 异步客户端(流式用)
 llm_provider = DEFAULT_LLM_PROVIDER
 
 
@@ -62,9 +61,19 @@ class ChatMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str
 
+
+class TurnHistory(BaseModel):
+    """单轮对话历史记录,用 turn_id 标识轮次"""
+    turn_id: int                    # 轮次编号(从1开始)
+    user_query: str                 # 用户原始问题
+    rewritten_query: Optional[str] = None  # 改写后的完整问题
+    answer: str                     # 助手回答
+    context_sources: Optional[List[str]] = None  # 检索来源文件列表
+
+
 class ChatRequest(BaseModel):
     query: str
-    history: Optional[List[ChatMessage]] = None   # 可选，不传就是新对话
+    history: Optional[List[TurnHistory]] = None   # 可选,不传就是新对话
     mode: str = "hybrid"      # dense/sparse/hybrid
     top_k: int = 10
     debug: bool = False
@@ -72,7 +81,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    history: List[ChatMessage]    # 返回更新后的历史
+    history: List[TurnHistory]    # 返回更新后的历史(结构化)
     debug: Optional[Dict[str, Any]] = None
 
 class StatusResponse(BaseModel):
@@ -90,10 +99,10 @@ async def startup_event():
     # 初始化向量数据库
     model = build_vector_db(PathConfig.DEFAULT_DOC_PATH, rebuild=False)
 
-    # 初始化LLM客户端（同步 + 异步）
+    # 初始化LLM客户端(同步 + 异步)
     import os
     if llm_provider == "llamacpp":
-        # Llama.cpp 走内网，绕过代理
+        # Llama.cpp 走内网,绕过代理
         os.environ.pop("http_proxy", None)
         os.environ.pop("https_proxy", None)
         os.environ.pop("HTTP_PROXY", None)
@@ -136,7 +145,7 @@ async def chat(request: ChatRequest):
     """
     主对话接口
 
-    流程：意图识别 → 查询改写 → 智能路由 → 检索优化 → 混合检索 → LLM生成
+    流程:查询改写 → 智能路由 → 检索优化 → 混合检索 → LLM生成
     支持 stream=True 流式输出
     每个阶段记录耗时并通过 SSE 推送进度
     """
@@ -159,34 +168,39 @@ async def chat(request: ChatRequest):
         print(f"[PIPELINE] {name}: {elapsed_ms}ms {detail}")
 
     # ============ 处理历史 ============
+    # 将 TurnHistory 列表转换为扁平化的消息列表(用于 rewrite)
+    flat_history = []  # [{"role": "user"/"assistant", "content": "..."}]
     if request.history:
-        history = [msg.model_dump() for msg in request.history]
+        for turn in request.history:
+            turn_data = turn.model_dump()
+            # 用户消息
+            flat_history.append({
+                "role": "user",
+                "content": turn_data.get("rewritten_query") or turn_data["user_query"]
+            })
+            # 助手消息
+            flat_history.append({
+                "role": "assistant",
+                "content": turn_data["answer"]
+            })
     else:
-        history = []
+        flat_history = []
 
-    # ============ 1. 意图识别 ============
-    t0 = time.perf_counter()
-    user_intent = intent(current_query)
-    _record_stage("意图识别", "done", t0, user_intent)
-    debug_info["intent"] = user_intent
+    # 当前轮次编号
+    current_turn_id = len(request.history) + 1 if request.history else 1
 
-    # ============ 2. 查询改写（补全省略/代词）=============
+    # ============ 1. 查询改写（补全省略/代词）=============
     t0 = time.perf_counter()
-    print(f"[DEBUG] 输入问题: {current_query}")
-    print(f"[DEBUG] 历史轮数: {len(history)}")
-    if history:
-        print(f"[DEBUG] 上一轮: {history[-1] if len(history) > 0 else '无'}")
-    query_complete = rewrite(current_query, history)
+    query_complete = rewrite(current_query, flat_history)
     _record_stage("查询改写", "done", t0, f"{current_query[:20]}... → {query_complete[:20]}...")
-    print(f"[DEBUG] 改写后: {query_complete}")
 
-    # ============ 3. 智能路由 ============
+    # ============ 2. 智能路由 ============
     t0 = time.perf_counter()
     target_docs = router(query_complete)
     docs_display = target_docs if target_docs != [None] else ["全部文档"]
     _record_stage("智能路由", "done", t0, str(docs_display))
 
-    # ============ 4. 检索优化（精简query）=============
+    # ============ 3. 检索优化(精简query)=============
     t0 = time.perf_counter()
     query_optimized = rewrite_for_retrieval(query_complete)
     _record_stage("检索优化", "done", t0, f"{query_complete[:20]}... → {query_optimized[:20]}...")
@@ -198,57 +212,67 @@ async def chat(request: ChatRequest):
     }
     debug_info["router_result"] = docs_display
 
-    # ============ 5. 混合检索 ============
+    # ============ 4. 混合检索 ============
     t0 = time.perf_counter()
     all_results = []
 
     if target_docs == [None]:
-        all_results = _search(query_optimized, request.mode, request.top_k * 2, None)
+        all_results = _search(query_optimized, request.mode, request.top_k, None)
     elif len(target_docs) == 1:
-        all_results = _search(query_optimized, request.mode, request.top_k * 2, target_docs[0])
+        all_results = _search(query_optimized, request.mode, request.top_k, target_docs[0])
     else:
         for doc in target_docs:
-            results = _search(query_optimized, request.mode, request.top_k, doc)
+            results = _search(query_optimized, request.mode, request.top_k // len(target_docs), doc)
             all_results.extend(results)
         all_results.sort(key=lambda x: x[2], reverse=True)
 
     _record_stage("混合检索", "done", t0, f"召回 {len(all_results)} 个片段")
 
-    # ============ 6. 解析占位符 ============
+    # ============ 5. 解析占位符 ============
     t0 = time.perf_counter()
     all_results = resolve_placeholders(all_results)
     _record_stage("占位符解析", "done", t0, f"还原表格占位符")
 
-    # ============ 7. 构建上下文 ============
+    # ============ 6. 构建上下文 ============
     t0 = time.perf_counter()
     retrieved_contexts = []
+    context_sources = []  # 记录来源文件
     for _, text, _, source in all_results:
         clean_source = source.replace('.md', '')
-        context_block = f"【来源文件：{clean_source}】\n{text}"
+        context_block = f"【来源文件:{clean_source}】\n{text}"
         retrieved_contexts.append(context_block)
+        if clean_source not in context_sources:
+            context_sources.append(clean_source)
 
     context_text = "\n\n---\n\n".join(retrieved_contexts)
     _record_stage("上下文构建", "done", t0, f"Context {len(context_text)} 字符")
     debug_info["context_text"] = context_text  # 保存上下文供前端展开显示
 
-    # ============ 8. 构建 messages ============
+    # ============ 7. 构建 messages ============
+    # 模式:系统提示 + 检索上下文(system) + 历史对话(user/assistant) + 当前问题(user)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for msg in history:
-        if not (msg.get('role') == 'system' and '【本轮财报片段】' in msg.get('content', '')):
-            messages.append(msg)
 
-    # 闲聊时不加财报片段
-    if user_intent == "chat":
-        messages.append({"role": "user", "content": current_query})
-        final_query = current_query
-        # 闲聊跳过检索相关阶段标记
-        for s in pipeline_stages:
-            if s["name"] in ("智能路由", "检索优化", "混合检索", "占位符解析", "上下文构建"):
-                s["status"] = "skipped"
-    else:
-        messages.append({"role": "system", "content": f"【本轮财报片段】\n{context_text}"})
-        messages.append({"role": "user", "content": query_optimized})
-        final_query = current_query
+    # 先添加检索上下文(放在历史对话之前，确保大模型优先关注)
+    if context_text:
+        messages.append({
+            "role": "system",
+            "content": f"【检索参考】\n{context_text}"
+        })
+
+    # 再添加历史对话
+    if flat_history:
+        for msg in flat_history:
+            role = msg.get('role', '')
+            content = msg.get('content', '')
+            if role in ['user', 'assistant']:
+                messages.append({
+                    "role": role,
+                    "content": content
+                })
+
+    # 最后添加当前问题
+    messages.append({"role": "user", "content": query_complete})
+    final_query = current_query
 
     model_name = LlamaCppConfig.MODEL if llm_provider == "llamacpp" else LLMConfig.MODEL
     extra = LlamaCppConfig.extra_body() if llm_provider == "llamacpp" else {"thinking": {"type": "disabled"}}
@@ -272,7 +296,7 @@ async def chat(request: ChatRequest):
                     model=model_name,
                     extra_body=extra,
                     messages=messages,
-                    temperature=0.1 if user_intent != "chat" else 0.7,
+                    temperature=0.1,
                     stream=True
                 )
                 async for chunk in stream:
@@ -310,14 +334,20 @@ async def chat(request: ChatRequest):
             for stage in pipeline_stages[-2:]:
                 yield f"event: progress\ndata: {json.dumps(stage, ensure_ascii=False)}\n\n"
 
-            # 发送最终结果（含完整 answer 和 history）
-            updated_history = history.copy()
-            updated_history.append({"role": "user", "content": final_query})
-            updated_history.append({"role": "assistant", "content": full_answer})
+            # 发送最终结果(含完整 answer 和 history)
+            # 构建新的 TurnHistory
+            updated_history = [turn.model_dump() for turn in (request.history or [])]
+            updated_history.append({
+                "turn_id": current_turn_id,
+                "user_query": original_query,
+                "rewritten_query": query_complete,
+                "answer": full_answer,
+                "context_sources": context_sources
+            })
 
             # debug 信息
             dense_scores = {}
-            if user_intent != "chat" and request.mode in ["hybrid", "dense"]:
+            if request.mode in ["hybrid", "dense"]:
                 try:
                     dense_results = dense_search(query_optimized, top_k=10, source_filter=None if target_docs == [None] else (target_docs[0] if len(target_docs) == 1 else None))
                     dense_scores = {doc_id: 1 / (1 + score) for doc_id, _, score, _ in dense_results}
@@ -342,7 +372,7 @@ async def chat(request: ChatRequest):
 
             final_data = {
                 "answer": full_answer,
-                "history": [ChatMessage(**m).model_dump() for m in updated_history],
+                "history": updated_history,  # 已经是 TurnHistory 格式
                 "debug": debug_info
             }
 
@@ -354,25 +384,31 @@ async def chat(request: ChatRequest):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         )
 
-    # ============ 非流式（原有逻辑）=============
+    # ============ 非流式(原有逻辑)=============
     gen_start = time.perf_counter()
     response = client.chat.completions.create(
         model=model_name,
         extra_body=extra,
         messages=messages,
-        temperature=0.1 if user_intent != "chat" else 0.7
+        temperature=0.1
     )
     answer = response.choices[0].message.content
     gen_elapsed_ms = round((time.perf_counter() - gen_start) * 1000, 1)
     _record_stage("LLM生成", "done", gen_start, f"输出 {len(answer)} 字符")
     total_elapsed_ms = round((time.perf_counter() - request_start) * 1000, 1)
 
-    updated_history = history.copy()
-    updated_history.append({"role": "user", "content": final_query})
-    updated_history.append({"role": "assistant", "content": answer})
+    # 构建新的 TurnHistory
+    updated_history = [turn.model_dump() for turn in (request.history or [])]
+    updated_history.append({
+        "turn_id": current_turn_id,
+        "user_query": original_query,
+        "rewritten_query": query_complete,
+        "answer": answer,
+        "context_sources": context_sources
+    })
 
     dense_scores = {}
-    if user_intent != "chat" and request.mode in ["hybrid", "dense"]:
+    if request.mode in ["hybrid", "dense"]:
         dense_results = dense_search(query_optimized, top_k=10, source_filter=None if target_docs == [None] else (target_docs[0] if len(target_docs) == 1 else None))
         dense_scores = {doc_id: 1 / (1 + score) for doc_id, _, score, _ in dense_results}
 
@@ -393,7 +429,7 @@ async def chat(request: ChatRequest):
 
     return ChatResponse(
         answer=answer,
-        history=[ChatMessage(**m) for m in updated_history],
+        history=[TurnHistory(**m) for m in updated_history],
         debug=debug_info if request.debug else None
     )
 
