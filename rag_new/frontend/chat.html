@@ -327,100 +327,89 @@
             color: #f57c00;
         }
 
-        /* ===== 消息内嵌进度条 ===== */
-        .message-pipeline {
-            margin-top: 8px;
+        /* ===== 阶段消息卡片 ===== */
+        .stage-message {
+            display: flex;
+            gap: 10px;
+            animation: fadeIn 0.3s ease;
+            align-items: flex-start;
+        }
+
+        .stage-message .stage-avatar {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            flex-shrink: 0;
+            background: #f0f0f0;
+            color: #999;
+        }
+
+        .stage-message .stage-bubble {
             padding: 8px 12px;
             background: #f8f9fa;
             border-radius: 8px;
-            font-size: 11px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-            align-items: center;
-            max-width: 100%;
-            overflow: hidden;
-            transition: all 0.3s ease;
-        }
-
-        .message-pipeline.collapsed {
-            cursor: pointer;
-        }
-
-        .message-pipeline.collapsed:hover {
-            background: #e9ecef;
-        }
-
-        .message-pipeline.collapsed .pipeline-detail {
-            display: none;
-        }
-
-        .message-pipeline .pipeline-total {
-            font-weight: 600;
-            color: #667eea;
-            padding: 2px 8px;
-            background: rgba(102, 126, 234, 0.1);
-            border-radius: 10px;
-        }
-
-        .message-pipeline .pipeline-detail {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 4px;
-            width: 100%;
-            margin-top: 4px;
-            padding-top: 4px;
-            border-top: 1px solid #e0e0e0;
-        }
-
-        .msg-pipeline-stage {
-            display: inline-flex;
-            align-items: center;
-            gap: 3px;
-            padding: 2px 8px;
-            border-radius: 10px;
-            font-size: 11px;
-            font-weight: 500;
-            color: #bbb;
-            background: #f0f0f0;
-            transition: all 0.3s ease;
-            white-space: nowrap;
-        }
-
-        .msg-pipeline-stage .stage-icon {
             font-size: 12px;
+            color: #666;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            max-width: 80%;
         }
 
-        .msg-pipeline-stage .stage-time {
-            font-size: 10px;
+        .stage-message .stage-bubble .stage-name {
+            font-weight: 500;
+            color: #333;
+        }
+
+        .stage-message .stage-bubble .stage-time {
             color: #999;
-            font-weight: 400;
+            font-size: 11px;
         }
 
-        .msg-pipeline-stage.done {
-            color: #fff;
+        .stage-message .stage-bubble .stage-detail {
+            color: #999;
+            font-size: 11px;
+            font-style: italic;
+        }
+
+        .stage-message.done .stage-avatar {
             background: #52c41a;
+            color: white;
         }
 
-        .msg-pipeline-stage.done .stage-time {
-            color: rgba(255,255,255,0.85);
-        }
-
-        .msg-pipeline-stage.running {
-            color: #fff;
+        .stage-message.running .stage-avatar {
             background: #1890ff;
+            color: white;
             animation: pulse 1.2s ease-in-out infinite;
         }
 
-        .msg-pipeline-stage.skipped {
-            color: #ccc;
+        .stage-message.skipped .stage-avatar {
             background: #f5f5f5;
-            text-decoration: line-through;
+            color: #ccc;
         }
 
-        .msg-pipeline-stage.error {
-            color: #fff;
+        .stage-message.skipped .stage-bubble {
+            opacity: 0.6;
+        }
+
+        .stage-message.error .stage-avatar {
             background: #ff4d4f;
+            color: white;
+        }
+
+        .stage-message.total .stage-avatar {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+        }
+
+        .stage-message.total .stage-bubble {
+            background: linear-gradient(135deg, rgba(102,126,234,0.1), rgba(118,75,162,0.1));
+            font-weight: 600;
+            color: #667eea;
         }
 
         @keyframes pulse {
@@ -506,9 +495,9 @@
             }
         }
 
-        // ===== 消息内嵌进度管理 =====
-        let currentPipelineEl = null;  // 当前进度条 DOM 元素
-        let currentPipelineStages = [];  // 当前请求的阶段列表
+        // ===== 阶段消息管理 =====
+        let stageMessageElements = {};  // 存储阶段消息的 DOM 元素 {stageName: element}
+        let stageMessageContainer = null;  // 阶段消息的容器
 
         // 格式化时间显示：小于1秒显示毫秒，大于等于1秒显示秒
         function formatTime(ms) {
@@ -519,70 +508,72 @@
             }
         }
 
-        // 在消息气泡下方创建进度条
-        function createMessagePipeline(bubble) {
-            const messageDiv = bubble.parentElement;
+        // 创建阶段消息容器
+        function createStageContainer() {
+            const messagesDiv = document.getElementById('messages');
             
-            // 移除旧的进度条
-            const oldPipeline = messageDiv.querySelector('.message-pipeline');
-            if (oldPipeline) oldPipeline.remove();
-
-            const pipelineEl = document.createElement('div');
-            pipelineEl.className = 'message-pipeline';
-            pipelineEl.innerHTML = `
-                <span class="pipeline-total">处理中...</span>
-                <div class="pipeline-detail"></div>
-            `;
-            messageDiv.appendChild(pipelineEl);
-            currentPipelineEl = pipelineEl;
-            currentPipelineStages = [];
+            // 移除旧的容器
+            removeStageContainer();
             
-            return pipelineEl;
+            const container = document.createElement('div');
+            container.id = 'stageMessageContainer';
+            container.style.display = 'flex';
+            container.style.flexDirection = 'column';
+            container.style.gap = '6px';
+            container.style.padding = '0 20px';
+            messagesDiv.appendChild(container);
+            stageMessageContainer = container;
+            stageMessageElements = {};
+            
+            // 自动滚动
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
 
-        // 更新进度条
-        function updateMessagePipeline(stages) {
-            if (!currentPipelineEl) return;
+        // 移除阶段消息容器
+        function removeStageContainer() {
+            const old = document.getElementById('stageMessageContainer');
+            if (old) old.remove();
+            stageMessageContainer = null;
+            stageMessageElements = {};
+        }
+
+        // 添加/更新阶段消息
+        function addOrUpdateStage(stage) {
+            if (!stageMessageContainer) return;
             
-            const detailEl = currentPipelineEl.querySelector('.pipeline-detail');
-            const totalEl = currentPipelineEl.querySelector('.pipeline-total');
+            const icons = { pending: '○', running: '◔', done: '✓', skipped: '—', error: '✗', total: '⏱' };
+            const icon = icons[stage.status] || '○';
+            const timeStr = stage.elapsed_ms > 0 ? `<span class="stage-time">${formatTime(stage.elapsed_ms)}</span>` : '';
+            const detailStr = stage.detail ? `<span class="stage-detail">${stage.detail}</span>` : '';
             
-            // 查找总耗时阶段
-            const totalStage = stages.find(s => s.name === '总耗时');
-            
-            if (totalStage && totalStage.status === 'done') {
-                // 完成后显示折叠状态
-                totalEl.textContent = `⏱ 总耗时 ${formatTime(totalStage.elapsed_ms)} (点击展开)`;
-                currentPipelineEl.classList.add('collapsed');
-                currentPipelineEl.onclick = function() {
-                    this.classList.toggle('collapsed');
-                };
-            } else {
-                // 处理中显示详情
-                totalEl.textContent = '处理中...';
-                currentPipelineEl.classList.remove('collapsed');
-                currentPipelineEl.onclick = null;
+            // 检查是否已存在
+            let el = stageMessageElements[stage.name];
+            if (!el) {
+                el = document.createElement('div');
+                el.className = `stage-message ${stage.status}`;
+                stageMessageElements[stage.name] = el;
+                stageMessageContainer.appendChild(el);
+                
+                // 自动滚动
+                const messagesDiv = document.getElementById('messages');
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
             }
             
-            // 渲染所有阶段
-            detailEl.innerHTML = stages.map(s => {
-                const icons = { pending: '○', running: '◔', done: '✓', skipped: '—', error: '✗' };
-                const icon = icons[s.status] || '○';
-                const timeStr = s.elapsed_ms > 0 ? `<span class="stage-time">${formatTime(s.elapsed_ms)}</span>` : '';
-                return `<span class="msg-pipeline-stage ${s.status}">
-                    <span class="stage-icon">${icon}</span>
-                    <span>${s.name}</span>
+            // 更新状态和内容
+            el.className = `stage-message ${stage.status}`;
+            el.innerHTML = `
+                <div class="stage-avatar">${icon}</div>
+                <div class="stage-bubble">
+                    <span class="stage-name">${stage.name}</span>
                     ${timeStr}
-                </span>`;
-            }).join('');
+                    ${detailStr}
+                </div>
+            `;
         }
 
-        // 隐藏进度条
-        function hideMessagePipeline() {
-            if (currentPipelineEl) {
-                currentPipelineEl.remove();
-                currentPipelineEl = null;
-            }
+        // 隐藏阶段消息
+        function hideStageMessages() {
+            removeStageContainer();
         }
 
         // 发送消息（支持流式输出 + 流水线进度）
@@ -614,10 +605,11 @@
             sendBtn.innerHTML = '<span class="loading"></span>';
             isStreaming = true;
 
+            // 创建阶段消息容器（在 AI 气泡之前显示）
+            createStageContainer();
+            
             // 创建一个 AI 消息气泡用于流式填充
             const assistantBubble = createAssistantBubble();
-            // 在气泡下方创建进度条
-            createMessagePipeline(assistantBubble);
 
             try {
                 const requestBody = {
@@ -684,15 +676,8 @@
                                 } else if (event === 'progress') {
                                     try {
                                         const stage = JSON.parse(dataStr);
-                                        // 更新阶段列表
-                                        const existingIdx = currentPipelineStages.findIndex(s => s.name === stage.name);
-                                        if (existingIdx >= 0) {
-                                            currentPipelineStages[existingIdx] = stage;
-                                        } else {
-                                            currentPipelineStages.push(stage);
-                                        }
-                                        // 更新进度条显示
-                                        updateMessagePipeline(currentPipelineStages);
+                                        // 添加或更新阶段消息
+                                        addOrUpdateStage(stage);
                                     } catch(e) { console.error('progress parse error:', e); }
                                 } else if (event === 'done') {
                                     try {
@@ -700,19 +685,20 @@
                                         console.log('[chat] 收到 done 事件');
                                         if (finalData.error) {
                                             updateAssistantBubbleText(assistantBubble, '错误: ' + finalData.error);
-                                            // 更新进度条为错误状态
-                                            if (currentPipelineStages.length > 0) {
-                                                currentPipelineStages[currentPipelineStages.length - 1].status = 'error';
-                                                updateMessagePipeline(currentPipelineStages);
+                                            // 更新最后阶段为错误状态
+                                            const lastStage = Object.values(stageMessageElements).pop();
+                                            if (lastStage) {
+                                                addOrUpdateStage({name: Object.keys(stageMessageElements).pop(), status: 'error', elapsed_ms: 0, detail: finalData.error});
                                             }
                                         } else {
                                             updateAssistantBubbleText(assistantBubble, finalData.answer);
                                             conversationHistory = finalData.history;
 
-                                            // 用后端返回的完整 pipeline 数据更新进度条
+                                            // 用后端返回的完整 pipeline 数据更新阶段消息
                                             if (finalData.debug && finalData.debug.pipeline_stages) {
-                                                currentPipelineStages = finalData.debug.pipeline_stages;
-                                                updateMessagePipeline(currentPipelineStages);
+                                                finalData.debug.pipeline_stages.forEach(stage => {
+                                                    addOrUpdateStage(stage);
+                                                });
                                             }
 
                                             if (debugMode && finalData.debug) {
@@ -731,7 +717,7 @@
             } catch (error) {
                 console.error('[chat] 错误:', error);
                 updateAssistantBubbleText(assistantBubble, `错误: ${error.message}`);
-                hideMessagePipeline();
+                hideStageMessages();
             } finally {
                 sendBtn.disabled = false;
                 sendBtn.textContent = '发送';
@@ -835,7 +821,7 @@
         // 清空历史
         function clearHistory() {
             conversationHistory = [];
-            hideMessagePipeline();
+            hideStageMessages();
             document.getElementById('messages').innerHTML = `
                 <div class="welcome-message" id="welcome">
                     <h2>你好！我可以帮你查询财报信息</h2>
