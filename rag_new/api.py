@@ -10,6 +10,8 @@ from typing import Literal, Optional, List, Dict, Any
 from openai import OpenAI, AsyncOpenAI
 import os
 import json
+import time
+import traceback
 
 from rag import (
     build_vector_db,
@@ -136,10 +138,25 @@ async def chat(request: ChatRequest):
 
     流程：意图识别 → 查询改写 → 智能路由 → 检索优化 → 混合检索 → LLM生成
     支持 stream=True 流式输出
+    每个阶段记录耗时并通过 SSE 推送进度
     """
-    debug_info = {} if request.debug else None
+    debug_info = {}
     original_query = request.query
     current_query = original_query
+    request_start = time.perf_counter()
+
+    # ============ 阶段计时收集 ============
+    pipeline_stages = []  # [{"name", "status", "elapsed_ms", "detail"}]
+
+    def _record_stage(name: str, status: str, start: float, detail: str = ""):
+        elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
+        pipeline_stages.append({
+            "name": name,
+            "status": status,  # "done" | "skipped"
+            "elapsed_ms": elapsed_ms,
+            "detail": detail
+        })
+        print(f"[PIPELINE] {name}: {elapsed_ms}ms {detail}")
 
     # ============ 处理历史 ============
     if request.history:
@@ -148,34 +165,41 @@ async def chat(request: ChatRequest):
         history = []
 
     # ============ 1. 意图识别 ============
+    t0 = time.perf_counter()
     user_intent = intent(current_query)
-
-    if request.debug:
-        debug_info["intent"] = user_intent
+    _record_stage("意图识别", "done", t0, user_intent)
+    debug_info["intent"] = user_intent
 
     # ============ 2. 查询改写（补全省略/代词）=============
+    t0 = time.perf_counter()
     print(f"[DEBUG] 输入问题: {current_query}")
     print(f"[DEBUG] 历史轮数: {len(history)}")
     if history:
         print(f"[DEBUG] 上一轮: {history[-1] if len(history) > 0 else '无'}")
     query_complete = rewrite(current_query, history)
+    _record_stage("查询改写", "done", t0, f"{current_query[:20]}... → {query_complete[:20]}...")
     print(f"[DEBUG] 改写后: {query_complete}")
 
     # ============ 3. 智能路由 ============
+    t0 = time.perf_counter()
     target_docs = router(query_complete)
+    docs_display = target_docs if target_docs != [None] else ["全部文档"]
+    _record_stage("智能路由", "done", t0, str(docs_display))
 
     # ============ 4. 检索优化（精简query）=============
+    t0 = time.perf_counter()
     query_optimized = rewrite_for_retrieval(query_complete)
+    _record_stage("检索优化", "done", t0, f"{query_complete[:20]}... → {query_optimized[:20]}...")
 
-    if request.debug:
-        debug_info["rewrite_steps"] = {
-            "original": original_query,
-            "step1_complete": query_complete,
-            "step2_optimized": query_optimized
-        }
-        debug_info["router_result"] = target_docs if target_docs != [None] else ["全部文档"]
+    debug_info["rewrite_steps"] = {
+        "original": original_query,
+        "step1_complete": query_complete,
+        "step2_optimized": query_optimized
+    }
+    debug_info["router_result"] = docs_display
 
     # ============ 5. 混合检索 ============
+    t0 = time.perf_counter()
     all_results = []
 
     if target_docs == [None]:
@@ -188,10 +212,15 @@ async def chat(request: ChatRequest):
             all_results.extend(results)
         all_results.sort(key=lambda x: x[2], reverse=True)
 
+    _record_stage("混合检索", "done", t0, f"召回 {len(all_results)} 个片段")
+
     # ============ 6. 解析占位符 ============
+    t0 = time.perf_counter()
     all_results = resolve_placeholders(all_results)
+    _record_stage("占位符解析", "done", t0, f"还原表格占位符")
 
     # ============ 7. 构建上下文 ============
+    t0 = time.perf_counter()
     retrieved_contexts = []
     for _, text, _, source in all_results:
         clean_source = source.replace('.md', '')
@@ -199,6 +228,7 @@ async def chat(request: ChatRequest):
         retrieved_contexts.append(context_block)
 
     context_text = "\n\n---\n\n".join(retrieved_contexts)
+    _record_stage("上下文构建", "done", t0, f"Context {len(context_text)} 字符")
 
     # ============ 8. 构建 messages ============
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -210,6 +240,10 @@ async def chat(request: ChatRequest):
     if user_intent == "chat":
         messages.append({"role": "user", "content": current_query})
         final_query = current_query
+        # 闲聊跳过检索相关阶段标记
+        for s in pipeline_stages:
+            if s["name"] in ("智能路由", "检索优化", "混合检索", "占位符解析", "上下文构建"):
+                s["status"] = "skipped"
     else:
         messages.append({"role": "system", "content": f"【本轮财报片段】\n{context_text}"})
         messages.append({"role": "user", "content": query_optimized})
@@ -223,6 +257,15 @@ async def chat(request: ChatRequest):
         async def stream_generator():
             """SSE 流式生成器 - 使用 AsyncOpenAI 实现真正异步流式"""
             full_answer = ""
+            gen_start = time.perf_counter()
+
+            # --- 先推送所有已完成的阶段进度 ---
+            for stage in pipeline_stages:
+                yield f"event: progress\ndata: {json.dumps(stage, ensure_ascii=False)}\n\n"
+
+            # --- 推送 LLM 生成开始 ---
+            yield f"event: progress\ndata: {json.dumps({'name': 'LLM生成', 'status': 'running', 'elapsed_ms': 0, 'detail': '流式输出中...'}, ensure_ascii=False)}\n\n"
+
             try:
                 stream = await async_client.chat.completions.create(
                     model=model_name,
@@ -237,39 +280,70 @@ async def chat(request: ChatRequest):
                         full_answer += delta.content
                         yield f"event: message\ndata: {json.dumps(delta.content, ensure_ascii=False)}\n\n"
 
-                # 发送最终结果（含完整 answer 和 history）
-                updated_history = history.copy()
-                updated_history.append({"role": "user", "content": final_query})
-                updated_history.append({"role": "assistant", "content": full_answer})
-
-                # debug 信息
-                if request.debug:
-                    dense_scores = {}
-                    if user_intent != "chat" and request.mode in ["hybrid", "dense"]:
-                        dense_results = dense_search(query_optimized, top_k=10, source_filter=None if target_docs == [None] else (target_docs[0] if len(target_docs) == 1 else None))
-                        dense_scores = {doc_id: 1 / (1 + score) for doc_id, _, score, _ in dense_results}
-
-                    debug_chunks = []
-                    for doc_id, text, rrf_score, source in all_results[:request.top_k]:
-                        chunk_info = {
-                            "chunk_id": doc_id,
-                            "rrf_score": round(rrf_score, 4),
-                            "source": source,
-                            "content": text[:200] + "..." if len(text) > 200 else text
-                        }
-                        if doc_id in dense_scores:
-                            chunk_info["vector_similarity"] = round(dense_scores[doc_id], 4)
-                        debug_chunks.append(chunk_info)
-
-                    debug_info["retrieved_chunks"] = debug_chunks
-
-                final_data = {
-                    "answer": full_answer,
-                    "history": [ChatMessage(**m).model_dump() for m in updated_history],
-                    "debug": debug_info
-                }
             except Exception as e:
-                final_data = {"error": str(e)}
+                tb = traceback.format_exc()
+                print(f"\n{'='*60}")
+                print(f"[STREAM ERROR] {e}")
+                print(f"[TRACEBACK]\n{tb}")
+                print(f"{'='*60}\n")
+
+                gen_elapsed_ms = round((time.perf_counter() - gen_start) * 1000, 1)
+                total_elapsed_ms = round((time.perf_counter() - request_start) * 1000, 1)
+                pipeline_stages.append({"name": "LLM生成", "status": "error", "elapsed_ms": gen_elapsed_ms, "detail": str(e)})
+                pipeline_stages.append({"name": "总耗时", "status": "error", "elapsed_ms": total_elapsed_ms, "detail": ""})
+
+                # 推送错误阶段进度
+                for stage in pipeline_stages[-3:]:
+                    yield f"event: progress\ndata: {json.dumps(stage, ensure_ascii=False)}\n\n"
+
+                yield f"event: done\ndata: {json.dumps({'error': str(e), 'debug': {'pipeline_stages': pipeline_stages}}, ensure_ascii=False)}\n\n"
+                return
+
+            # --- LLM 生成完成 ---
+            gen_elapsed_ms = round((time.perf_counter() - gen_start) * 1000, 1)
+            total_elapsed_ms = round((time.perf_counter() - request_start) * 1000, 1)
+            pipeline_stages.append({"name": "LLM生成", "status": "done", "elapsed_ms": gen_elapsed_ms, "detail": f"输出 {len(full_answer)} 字符"})
+            pipeline_stages.append({"name": "总耗时", "status": "done", "elapsed_ms": total_elapsed_ms, "detail": ""})
+
+            # 推送完成进度
+            for stage in pipeline_stages[-2:]:
+                yield f"event: progress\ndata: {json.dumps(stage, ensure_ascii=False)}\n\n"
+
+            # 发送最终结果（含完整 answer 和 history）
+            updated_history = history.copy()
+            updated_history.append({"role": "user", "content": final_query})
+            updated_history.append({"role": "assistant", "content": full_answer})
+
+            # debug 信息
+            dense_scores = {}
+            if user_intent != "chat" and request.mode in ["hybrid", "dense"]:
+                try:
+                    dense_results = dense_search(query_optimized, top_k=10, source_filter=None if target_docs == [None] else (target_docs[0] if len(target_docs) == 1 else None))
+                    dense_scores = {doc_id: 1 / (1 + score) for doc_id, _, score, _ in dense_results}
+                except Exception as de:
+                    print(f"[DEBUG WARNING] dense_search for debug info failed: {de}")
+
+            debug_chunks = []
+            for doc_id, text, rrf_score, source in all_results[:request.top_k]:
+                chunk_info = {
+                    "chunk_id": doc_id,
+                    "rrf_score": round(rrf_score, 4),
+                    "source": source,
+                    "content": text[:200] + "..." if len(text) > 200 else text
+                }
+                if doc_id in dense_scores:
+                    chunk_info["vector_similarity"] = round(dense_scores[doc_id], 4)
+                debug_chunks.append(chunk_info)
+
+            debug_info["retrieved_chunks"] = debug_chunks
+            debug_info["pipeline_stages"] = pipeline_stages
+            debug_info["total_elapsed_ms"] = total_elapsed_ms
+
+            final_data = {
+                "answer": full_answer,
+                "history": [ChatMessage(**m).model_dump() for m in updated_history],
+                "debug": debug_info
+            }
 
             yield f"event: done\ndata: {json.dumps(final_data, ensure_ascii=False)}\n\n"
 
@@ -280,6 +354,7 @@ async def chat(request: ChatRequest):
         )
 
     # ============ 非流式（原有逻辑）=============
+    gen_start = time.perf_counter()
     response = client.chat.completions.create(
         model=model_name,
         extra_body=extra,
@@ -287,34 +362,38 @@ async def chat(request: ChatRequest):
         temperature=0.1 if user_intent != "chat" else 0.7
     )
     answer = response.choices[0].message.content
+    gen_elapsed_ms = round((time.perf_counter() - gen_start) * 1000, 1)
+    _record_stage("LLM生成", "done", gen_start, f"输出 {len(answer)} 字符")
+    total_elapsed_ms = round((time.perf_counter() - request_start) * 1000, 1)
 
     updated_history = history.copy()
     updated_history.append({"role": "user", "content": final_query})
     updated_history.append({"role": "assistant", "content": answer})
 
-    if request.debug:
-        dense_scores = {}
-        if user_intent != "chat" and request.mode in ["hybrid", "dense"]:
-            dense_results = dense_search(query_optimized, top_k=10, source_filter=None if target_docs == [None] else (target_docs[0] if len(target_docs) == 1 else None))
-            dense_scores = {doc_id: 1 / (1 + score) for doc_id, _, score, _ in dense_results}
+    dense_scores = {}
+    if user_intent != "chat" and request.mode in ["hybrid", "dense"]:
+        dense_results = dense_search(query_optimized, top_k=10, source_filter=None if target_docs == [None] else (target_docs[0] if len(target_docs) == 1 else None))
+        dense_scores = {doc_id: 1 / (1 + score) for doc_id, _, score, _ in dense_results}
 
-        debug_chunks = []
-        for doc_id, text, rrf_score, source in all_results[:request.top_k]:
-            chunk_info = {
-                "chunk_id": doc_id,
-                "rrf_score": round(rrf_score, 4),
-                "source": source,
-                "content": text[:200] + "..." if len(text) > 200 else text
-            }
-            if doc_id in dense_scores:
-                chunk_info["vector_similarity"] = round(dense_scores[doc_id], 4)
-            debug_chunks.append(chunk_info)
-        debug_info["retrieved_chunks"] = debug_chunks
+    debug_chunks = []
+    for doc_id, text, rrf_score, source in all_results[:request.top_k]:
+        chunk_info = {
+            "chunk_id": doc_id,
+            "rrf_score": round(rrf_score, 4),
+            "source": source,
+            "content": text[:200] + "..." if len(text) > 200 else text
+        }
+        if doc_id in dense_scores:
+            chunk_info["vector_similarity"] = round(dense_scores[doc_id], 4)
+        debug_chunks.append(chunk_info)
+    debug_info["retrieved_chunks"] = debug_chunks
+    debug_info["pipeline_stages"] = pipeline_stages
+    debug_info["total_elapsed_ms"] = total_elapsed_ms
 
     return ChatResponse(
         answer=answer,
         history=[ChatMessage(**m) for m in updated_history],
-        debug=debug_info
+        debug=debug_info if request.debug else None
     )
 
 

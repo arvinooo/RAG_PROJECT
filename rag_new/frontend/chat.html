@@ -326,6 +326,92 @@
             background: #fff3e0;
             color: #f57c00;
         }
+
+        /* ===== 流水线进度条 ===== */
+        .pipeline-bar {
+            display: flex;
+            align-items: center;
+            gap: 0;
+            padding: 10px 16px;
+            background: #fafafa;
+            border-top: 1px solid #e8e8e8;
+            border-bottom: 1px solid #e8e8e8;
+            overflow-x: auto;
+            white-space: nowrap;
+        }
+
+        .pipeline-stage {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #bbb;
+            background: #f0f0f0;
+            transition: all 0.4s ease;
+            flex-shrink: 0;
+        }
+
+        .pipeline-stage .stage-icon {
+            font-size: 14px;
+        }
+
+        .pipeline-stage .stage-time {
+            font-size: 11px;
+            color: #999;
+            font-weight: 400;
+            margin-left: 2px;
+        }
+
+        .pipeline-stage.done {
+            color: #fff;
+            background: #52c41a;
+        }
+
+        .pipeline-stage.done .stage-time {
+            color: rgba(255,255,255,0.85);
+        }
+
+        .pipeline-stage.running {
+            color: #fff;
+            background: #1890ff;
+            animation: pulse 1.2s ease-in-out infinite;
+        }
+
+        .pipeline-stage.skipped {
+            color: #bbb;
+            background: #f5f5f5;
+            text-decoration: line-through;
+        }
+
+        .pipeline-stage.error {
+            color: #fff;
+            background: #ff4d4f;
+        }
+
+        .pipeline-stage.total {
+            color: #fff;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            font-weight: 700;
+        }
+
+        .pipeline-arrow {
+            color: #ddd;
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        /* 隐藏初始 pipeline */
+        .pipeline-bar.hidden {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -335,6 +421,9 @@
     </div>
 
     <div class="chat-container">
+        <!-- 流水线进度条 -->
+        <div class="pipeline-bar hidden" id="pipelineBar"></div>
+
         <div class="messages" id="messages">
             <div class="welcome-message" id="welcome">
                 <h2>你好！我可以帮你查询财报信息</h2>
@@ -405,7 +494,69 @@
             }
         }
 
-        // 发送消息（支持流式输出）
+        // ===== 流水线进度管理 =====
+        let pipelineStages = [];  // 当前请求的阶段列表
+
+        // 初始化空的流水线条
+        function initPipelineBar(stages) {
+            pipelineStages = stages.map(s => ({...s, status: 'pending'}));
+            const bar = document.getElementById('pipelineBar');
+            bar.classList.remove('hidden');
+            bar.innerHTML = pipelineStages.map((s, i) => `
+                ${i > 0 ? '<span class="pipeline-arrow">→</span>' : ''}
+                <span class="pipeline-stage" id="stage-${i}">
+                    <span class="stage-icon">○</span>
+                    <span class="stage-name">${s.name}</span>
+                </span>
+            `).join('');
+        }
+
+        // 更新某个阶段的状态
+        function updatePipelineStage(index, stage) {
+            const el = document.getElementById(`stage-${index}`);
+            if (!el) return;
+
+            const icons = { pending: '○', running: '◔', done: '✓', skipped: '—', error: '✗', total: '⏱' };
+            el.className = `pipeline-stage ${stage.status}`;
+            el.innerHTML = `
+                <span class="stage-icon">${icons[stage.status] || '○'}</span>
+                <span class="stage-name">${stage.name}</span>
+                ${stage.elapsed_ms > 0 ? `<span class="stage-time">${formatTime(stage.elapsed_ms)}</span>` : ''}
+            `;
+        }
+
+        // 格式化时间显示：小于1秒显示毫秒，大于等于1秒显示秒
+        function formatTime(ms) {
+            if (ms < 1000) {
+                return `${ms}ms`;
+            } else {
+                return `${(ms / 1000).toFixed(2)}s`;
+            }
+        }
+
+        // 根据后端返回的 pipeline_stages 回填所有阶段
+        function renderFinalPipeline(stages) {
+            const bar = document.getElementById('pipelineBar');
+            bar.innerHTML = '';
+            stages.forEach((s, i) => {
+                if (i > 0) bar.innerHTML += '<span class="pipeline-arrow">→</span>';
+                const icons = { pending: '○', running: '◔', done: '✓', skipped: '—', error: '✗', total: '⏱' };
+                bar.innerHTML += `
+                    <span class="pipeline-stage ${s.status}">
+                        <span class="stage-icon">${icons[s.status] || '○'}</span>
+                        <span class="stage-name">${s.name}</span>
+                        ${s.elapsed_ms > 0 ? `<span class="stage-time">${formatTime(s.elapsed_ms)}</span>` : ''}
+                    </span>
+                `;
+            });
+        }
+
+        // 隐藏流水线条
+        function hidePipelineBar() {
+            document.getElementById('pipelineBar').classList.add('hidden');
+        }
+
+        // 发送消息（支持流式输出 + 流水线进度）
         async function sendMessage() {
             const input = document.getElementById('input');
             const message = input.value.trim();
@@ -443,7 +594,7 @@
                     history: conversationHistory,
                     mode: currentMode,
                     top_k: currentTopK,
-                    debug: debugMode,
+                    debug: true,  // 始终开启debug以获取pipeline信息
                     stream: true
                 };
                 console.log('[chat] 请求体:', JSON.stringify(requestBody));
@@ -460,7 +611,6 @@
                     throw new Error(`HTTP ${response.status}`);
                 }
 
-                // 检查是否有流式 body
                 if (!response.body) {
                     throw new Error('浏览器不支持 ReadableStream');
                 }
@@ -483,9 +633,8 @@
 
                     buffer += decoder.decode(value, { stream: true });
 
-                    // 解析 SSE 事件
                     const lines = buffer.split('\n\n');
-                    buffer = lines.pop() || ''; // 最后一段可能不完整，留着
+                    buffer = lines.pop() || '';
 
                     let event = '';
                     for (const block of lines) {
@@ -501,6 +650,36 @@
                                         chunkCount++;
                                         updateAssistantBubble(assistantBubble, fullAnswer);
                                     } catch(e) { console.error('parse error:', e); }
+                                } else if (event === 'progress') {
+                                    try {
+                                        const stage = JSON.parse(dataStr);
+                                        // 如果是第一个progress事件，初始化流水线条
+                                        if (chunkCount === 0 && fullAnswer === '' && pipelineStages.length === 0) {
+                                            // 预估所有阶段
+                                            const allStages = [
+                                                {name: '意图识别', status: 'pending', elapsed_ms: 0},
+                                                {name: '查询改写', status: 'pending', elapsed_ms: 0},
+                                                {name: '智能路由', status: 'pending', elapsed_ms: 0},
+                                                {name: '检索优化', status: 'pending', elapsed_ms: 0},
+                                                {name: '混合检索', status: 'pending', elapsed_ms: 0},
+                                                {name: '占位符解析', status: 'pending', elapsed_ms: 0},
+                                                {name: '上下文构建', status: 'pending', elapsed_ms: 0},
+                                                {name: 'LLM生成', status: 'pending', elapsed_ms: 0},
+                                                {name: '总耗时', status: 'pending', elapsed_ms: 0},
+                                            ];
+                                            initPipelineBar(allStages);
+                                        }
+                                        // 更新对应阶段
+                                        const nameToIndex = {
+                                            '意图识别': 0, '查询改写': 1, '智能路由': 2,
+                                            '检索优化': 3, '混合检索': 4, '占位符解析': 5,
+                                            '上下文构建': 6, 'LLM生成': 7, '总耗时': 8,
+                                        };
+                                        const idx = nameToIndex[stage.name];
+                                        if (idx !== undefined) {
+                                            updatePipelineStage(idx, stage);
+                                        }
+                                    } catch(e) { console.error('progress parse error:', e); }
                                 } else if (event === 'done') {
                                     try {
                                         const finalData = JSON.parse(dataStr);
@@ -509,10 +688,28 @@
                                             updateAssistantBubbleText(assistantBubble, '错误: ' + finalData.error);
                                         } else {
                                             updateAssistantBubbleText(assistantBubble, finalData.answer);
+                                            conversationHistory = finalData.history;
+
+                                            // 用后端返回的完整 pipeline 数据回填
+                                            if (finalData.debug && finalData.debug.pipeline_stages) {
+                                                renderFinalPipeline(finalData.debug.pipeline_stages);
+                                                // 追加总耗时
+                                                if (finalData.debug.total_elapsed_ms) {
+                                                    const totalEl = document.getElementById('stage-8');
+                                                    if (totalEl) {
+                                                        totalEl.className = 'pipeline-stage total';
+                                                        totalEl.innerHTML = `
+                                                            <span class="stage-icon">⏱</span>
+                                                            <span class="stage-name">总耗时</span>
+                                                            <span class="stage-time">${formatTime(finalData.debug.total_elapsed_ms)}</span>
+                                                        `;
+                                                    }
+                                                }
+                                            }
+
                                             if (debugMode && finalData.debug) {
                                                 appendDebugInfo(assistantBubble, finalData.debug);
                                             }
-                                            conversationHistory = finalData.history;
                                         }
                                     } catch(e) { console.error('parse error:', e); }
                                 }
@@ -520,13 +717,13 @@
                         }
                     }
 
-                    // ★ 关键：每读完一个 chunk 就等 1ms，让浏览器有机会重绘
                     await new Promise(r => setTimeout(r, 1));
                 }
 
             } catch (error) {
                 console.error('[chat] 错误:', error);
                 updateAssistantBubbleText(assistantBubble, `错误: ${error.message}`);
+                hidePipelineBar();
             } finally {
                 sendBtn.disabled = false;
                 sendBtn.textContent = '发送';
@@ -598,18 +795,21 @@
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
 
-        // 格式化debug信息
+        // 格式化debug信息（pipeline已在顶部进度条展示，这里只展示详情）
         function formatDebugInfo(debug) {
-            let result = '🔍 Debug信息:\n\n';
+            let result = '🔍 Debug详情:\n\n';
             if (debug.intent) result += `意图: ${debug.intent}\n`;
             if (debug.rewrite_steps) {
-                result += `改写步骤:\n`;
+                result += `改写:\n`;
                 result += `  原始: ${debug.rewrite_steps.original}\n`;
                 result += `  补全: ${debug.rewrite_steps.step1_complete}\n`;
                 result += `  优化: ${debug.rewrite_steps.step2_optimized}\n`;
             }
             if (debug.router_result) {
                 result += `路由: ${JSON.stringify(debug.router_result)}\n`;
+            }
+            if (debug.total_elapsed_ms) {
+                result += `\n⏱ 总耗时: ${formatTime(debug.total_elapsed_ms)}\n`;
             }
             if (debug.retrieved_chunks && debug.retrieved_chunks.length > 0) {
                 result += `\n检索到 ${debug.retrieved_chunks.length} 个片段:\n`;
@@ -627,6 +827,7 @@
         // 清空历史
         function clearHistory() {
             conversationHistory = [];
+            hidePipelineBar();
             document.getElementById('messages').innerHTML = `
                 <div class="welcome-message" id="welcome">
                     <h2>你好！我可以帮你查询财报信息</h2>
