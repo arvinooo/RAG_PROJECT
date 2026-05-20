@@ -15,6 +15,7 @@ load_dotenv()
 _model = None
 _bm25 = None
 _all_chunks = None
+_summary_dict = {}  # 存储doc_id到summary的映射
 
 
 def get_model():
@@ -66,9 +67,18 @@ def get_doc_count():
     return count
 
 
+def get_all_docs():
+    """获取数据库中所有文档列表"""
+    conn = get_db_connection()
+    cur = conn.execute("SELECT DISTINCT source_file FROM financial_vectors")
+    all_docs = [row[0] for row in cur.fetchall()]
+    conn.close()
+    return all_docs
+
+
 def load_all_chunks():
     """从数据库加载所有 chunks（用于 BM25）"""
-    global _all_chunks
+    global _all_chunks, _summary_dict
     if _all_chunks is not None:
         return _all_chunks
 
@@ -76,14 +86,27 @@ def load_all_chunks():
     cur = conn.execute("SELECT id, chunk_text, source_file, summary FROM financial_vectors ORDER BY id")
 
     _all_chunks = {}
+    _summary_dict = {}
     for row in cur.fetchall():
         doc_id, chunk_text, source_file, db_summary = row
         # 如果有 summary，就用 summary 做 BM25 分词和算分！否则用原文。
         text_for_bm25 = db_summary if db_summary else chunk_text
         _all_chunks[doc_id] = (text_for_bm25, source_file, chunk_text)
+        # 保存summary到全局字典
+        if db_summary:
+            _summary_dict[doc_id] = db_summary
 
     conn.close()
     return _all_chunks
+
+
+def get_summary_dict():
+    """获取summary字典"""
+    global _summary_dict
+    if not _summary_dict:
+        # 如果还没有加载，先加载chunks
+        load_all_chunks()
+    return _summary_dict
 
 
 def init_bm25():
@@ -104,7 +127,7 @@ def init_bm25():
 
 def clear_all():
     """清空所有向量数据"""
-    global _bm25, _all_chunks
+    global _bm25, _all_chunks, _summary_dict
     conn = get_db_connection()
     conn.execute("TRUNCATE TABLE financial_vectors")
     conn.commit()
@@ -112,6 +135,7 @@ def clear_all():
 
     _bm25 = None
     _all_chunks = None
+    _summary_dict = {}
     print("已清空向量表")
 
 

@@ -18,7 +18,9 @@ from rag import (
     hybrid_search,
     dense_search,
     sparse_search,
+    two_stage_retrieval,
     get_doc_count,
+    get_all_docs,
     router,
     rewrite,
     rewrite_for_retrieval,
@@ -216,17 +218,27 @@ async def chat(request: ChatRequest):
     t0 = time.perf_counter()
     all_results = []
 
-    if target_docs == [None]:
-        all_results = _search(query_optimized, request.mode, request.top_k, None)
+    # 判断是否为全局查询（包含"全部"或文档列表长度等于全部文档数）
+    all_docs_list = get_all_docs()
+    is_global_query = "全部" in target_docs or len(target_docs) == len(all_docs_list)
+
+    if is_global_query:
+        # 全局查询：使用两阶段检索
+        if request.mode == "hybrid":
+            all_results = two_stage_retrieval(query_optimized, top_k=request.top_k)
+            _record_stage("两阶段检索", "done", t0, f"召回 {len(all_results)} 个片段")
+        else:
+            all_results = _search(query_optimized, request.mode, request.top_k, None)
+            _record_stage("混合检索", "done", t0, f"召回 {len(all_results)} 个片段")
     elif len(target_docs) == 1:
         all_results = _search(query_optimized, request.mode, request.top_k, target_docs[0])
+        _record_stage("混合检索", "done", t0, f"召回 {len(all_results)} 个片段")
     else:
         for doc in target_docs:
             results = _search(query_optimized, request.mode, request.top_k // len(target_docs), doc)
             all_results.extend(results)
         all_results.sort(key=lambda x: x[2], reverse=True)
-
-    _record_stage("混合检索", "done", t0, f"召回 {len(all_results)} 个片段")
+        _record_stage("混合检索", "done", t0, f"召回 {len(all_results)} 个片段")
 
     # ============ 5. 解析占位符 ============
     t0 = time.perf_counter()
@@ -270,9 +282,9 @@ async def chat(request: ChatRequest):
                     "content": content
                 })
 
-    # 最后添加当前问题
-    messages.append({"role": "user", "content": query_complete})
-    final_query = current_query
+    # 最后添加当前问题（使用原始query）
+    messages.append({"role": "user", "content": original_query})
+    final_query = original_query
 
     model_name = LlamaCppConfig.MODEL if llm_provider == "llamacpp" else LLMConfig.MODEL
     extra = LlamaCppConfig.extra_body() if llm_provider == "llamacpp" else {"thinking": {"type": "disabled"}}

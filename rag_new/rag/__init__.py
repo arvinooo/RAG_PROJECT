@@ -8,6 +8,7 @@ from .database import (
     get_doc_count,
     get_model,
     resolve_placeholders,
+    get_all_docs,
 )
 
 # 检索操作
@@ -15,6 +16,8 @@ from .retrieval import (
     hybrid_search,
     dense_search,
     sparse_search,
+    two_stage_retrieval,
+    get_reranker,
 )
 
 # LLM操作
@@ -35,9 +38,12 @@ __all__ = [
     'hybrid_search',
     'dense_search',
     'sparse_search',
+    'two_stage_retrieval',
     # LLM
     'router',
     'rewrite',
     'intent',
     'rewrite_for_retrieval',
+    # Rerank
+    'get_reranker',
 ]
